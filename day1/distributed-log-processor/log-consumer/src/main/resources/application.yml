@@ -16,7 +16,7 @@ spring:
       ack-mode: manual-immediate
   
   datasource:
-    url: jdbc:postgresql://localhost:5432/logprocessor
+    url: jdbc:postgresql://localhost:5433/logprocessor
     username: loguser
     password: logpassword
     driver-class-name: org.postgresql.Driver

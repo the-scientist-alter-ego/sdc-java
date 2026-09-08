@@ -1,39 +1,79 @@
+# Maven / build
 target/
 !.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.properties
 
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
+# Compiled / packages
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
 
-### IntelliJ IDEA ###
-.idea
+# Logs and runtime
+*.log
+logs/
+.pids/
+*.pid
+*.out
+
+# Secrets and local env (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+*credentials*
+*secret*
+**/application-local.yml
+**/application-local.properties
+
+# IDE / editor
+.idea/
 *.iws
 *.iml
 *.ipr
-
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
-
-### VS Code ###
 .vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+.factorypath
+.springBeans
+.sts4-cache
+.apt_generated
+.nbproject/
+nbbuild/
+nbdist/
+.nb-gradle/
 
-### Docker ###
-*.log
-
-### OS ###
+# OS
 .DS_Store
 Thumbs.db
+Desktop.ini
+
+# Test / coverage
+.nyc_output/
+coverage/
+*.lcov
+.jacoco/
+jacoco.exec
+
+# Temporary / local Docker leftovers
+docker-volumes/
+tmp/
+temp/
+*.tmp
