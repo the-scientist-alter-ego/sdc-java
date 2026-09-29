@@ -11,46 +11,45 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
 
-import org.springframework.util.concurrent.ListenableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 @Service
 public class KafkaProducerService {
-    
+
     private static final Logger logger = LoggerFactory.getLogger(KafkaProducerService.class);
-    
+
     @Autowired
     private KafkaTemplate<String, String> kafkaTemplate;
-    
+
     @Autowired
     private ObjectMapper objectMapper;
-    
+
     @Value("${app.kafka.topic.log-events}")
     private String logEventsTopic;
-    
+
     public void sendLogEvent(LogEvent logEvent) {
+        final String message;
         try {
-            String message = objectMapper.writeValueAsString(logEvent);
-            
-            // Use organizationId as partition key for ordering
-            String partitionKey = logEvent.getOrganizationId();
-            
-            ListenableFuture<SendResult<String, String>> future = 
-                kafkaTemplate.send(logEventsTopic, partitionKey, message);
-            
-            future.addCallback(
-                result -> {
-                    logger.debug("Sent log event: {} to partition: {}", 
-                            logEvent.getId(), result.getRecordMetadata().partition());
-                },
-                ex -> {
-                    logger.error("Failed to send log event: {}", logEvent.getId(), ex);
-                    throw new RuntimeException("Failed to send log event", ex);
-                }
-            );
-            
+            message = objectMapper.writeValueAsString(logEvent);
         } catch (JsonProcessingException e) {
-            logger.error("Failed to serialize log event: {}", logEvent.getId(), e);
             throw new RuntimeException("Failed to serialize log event", e);
+        }
+
+        try {
+            SendResult<String, String> result = kafkaTemplate
+                    .send(logEventsTopic, logEvent.getOrganizationId(), message)
+                    .get(10, TimeUnit.SECONDS);
+
+            logger.debug("Sent log event: {} to partition: {}",
+                    logEvent.getId(), result.getRecordMetadata().partition());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while sending log event", e);
+        } catch (ExecutionException | TimeoutException e) {
+            logger.error("Failed to send log event: {}", logEvent.getId(), e);
+            throw new RuntimeException("Kafka did not acknowledge log event", e);
         }
     }
 }
