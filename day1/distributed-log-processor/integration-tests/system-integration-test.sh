@@ -1,65 +1,55 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "🔬 Running system integration tests..."
+echo "Checking service health..."
+for port in 8080 8081 8082; do
+  curl --fail --silent "http://localhost:${port}/actuator/health" > /dev/null
+  echo "Port ${port}: healthy"
+done
 
-# Function to check if service is healthy
-check_health() {
-  local service_url=$1
-  local service_name=$2
-  
-  if curl -f "$service_url/actuator/health" > /dev/null 2>&1; then
-    echo "✅ $service_name is healthy"
-    return 0
-  else
-    echo "❌ $service_name is not healthy"
-    return 1
-  fi
-}
+test_log_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+echo "Submitting event ${test_log_id} through the gateway..."
 
-# Test 1: Check all services are healthy
-echo "Test 1: Service Health Checks"
-check_health "http://localhost:8080" "API Gateway"
-check_health "http://localhost:8081" "Log Producer"
-check_health "http://localhost:8082" "Log Consumer"
+response_file=$(mktemp)
+trap 'rm -f "$response_file"' EXIT
 
-# Test 2: Submit log event and verify it's processed
-echo "Test 2: End-to-End Log Processing"
-test_log_id=$(uuidgen)
-response=$(curl -s -X POST http://localhost:8080/api/logs \
-  -H "Content-Type: application/json" \
+http_code=$(curl --silent --show-error \
+  --output "$response_file" \
+  --write-out '%{http_code}' \
+  -X POST http://localhost:8080/api/logs \
+  -H 'Content-Type: application/json' \
   -d "{
-    \"id\": \"$test_log_id\",
+    \"id\": \"${test_log_id}\",
     \"organizationId\": \"test-org\",
     \"level\": \"INFO\",
     \"message\": \"Integration test message\",
     \"source\": \"integration-test\"
   }")
 
-if echo "$response" | grep -q "success"; then
-  echo "✅ Log event submitted successfully"
-else
-  echo "❌ Failed to submit log event"
-  echo "Response: $response"
+if [[ "$http_code" != "200" ]] ||
+   ! grep -Fq "\"id\":\"${test_log_id}\"" "$response_file" ||
+   ! grep -Fq '"status":"success"' "$response_file"; then
+  echo "POST failed (HTTP ${http_code}):"
+  cat "$response_file"
+  exit 1
 fi
 
-# Test 3: Check metrics endpoints
-echo "Test 3: Metrics Availability"
-if curl -f http://localhost:8080/actuator/prometheus > /dev/null 2>&1; then
-  echo "✅ API Gateway metrics available"
-else
-  echo "❌ API Gateway metrics not available"
-fi
+echo "Kafka acknowledged the event. Waiting for its PostgreSQL row..."
 
-if curl -f http://localhost:8081/actuator/prometheus > /dev/null 2>&1; then
-  echo "✅ Log Producer metrics available"
-else
-  echo "❌ Log Producer metrics not available"
-fi
+for attempt in {1..20}; do
+  row_count=$(docker compose exec -T postgres \
+    psql -U loguser -d logprocessor -t -A \
+    -c "SELECT COUNT(*) FROM log_events WHERE id = '${test_log_id}';" |
+    tr -d '[:space:]')
 
-if curl -f http://localhost:8082/actuator/prometheus > /dev/null 2>&1; then
-  echo "✅ Log Consumer metrics available"
-else
-  echo "❌ Log Consumer metrics not available"
-fi
+  if [[ "$row_count" == "1" ]]; then
+    echo "PASS: event ${test_log_id} reached PostgreSQL."
+    exit 0
+  fi
 
-echo "🏁 Integration tests completed!"
+  sleep 1
+done
+
+echo "FAIL: event ${test_log_id} was acknowledged by Kafka but no PostgreSQL row appeared within 20 seconds."
+echo "Check the log-consumer terminal for deserialization, retry, or database errors."
+exit 1
