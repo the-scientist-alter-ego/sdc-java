@@ -10,7 +10,11 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
@@ -40,6 +44,7 @@ public class LogCollectorService {
     private final ExecutorService watcherPool = Executors.newFixedThreadPool(4);
     private final ExecutorService processingPool = Executors.newFixedThreadPool(8);
     private final ConcurrentHashMap<Path, WatchKey> watchedPaths = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Path, Object> fileLocks = new ConcurrentHashMap<>();
     private final AtomicLong processedEvents = new AtomicLong(0);
     private final AtomicLong skippedDuplicates = new AtomicLong(0);
 
@@ -131,37 +136,59 @@ public class LogCollectorService {
     }
 
     private void processLogFile(Path filePath) {
-        try {
-            long currentOffset = offsetManager.getOffset(filePath.toString());
-            long fileSize = Files.size(filePath);
-            
-            if (currentOffset >= fileSize) {
-                return; // No new content
-            }
-            
-            List<String> newLines = Files.readAllLines(filePath).stream()
-                .skip(currentOffset == 0 ? 0 : countLines(filePath, currentOffset))
-                .collect(java.util.stream.Collectors.toList());
-            
-            for (String line : newLines) {
-                if (!line.trim().isEmpty()) {
-                    processLogEntry(filePath.toString(), line, currentOffset);
-                    currentOffset += line.length() + System.lineSeparator().length();
-                }
-            }
-            
-            offsetManager.commitOffset(filePath.toString(), fileSize);
-            
-        } catch (Exception e) {
-            logger.error("Error processing log file: " + filePath, e);
-        }
-    }
+        // Initial scans and watch notifications can submit the same file concurrently.
+        synchronized (fileLocks.computeIfAbsent(filePath, path -> new Object())) {
+            try (FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ)) {
+                long currentOffset = offsetManager.getOffset(filePath.toString());
+                long fileSize = channel.size();
 
-    private long countLines(Path filePath, long offset) throws IOException {
-        if (offset == 0) return 0;
-        
-        try (var lines = Files.lines(filePath)) {
-            return lines.limit(offset).count();
+                if (currentOffset > fileSize) {
+                    currentOffset = 0; // The file was truncated.
+                }
+                if (currentOffset == fileSize) {
+                    return;
+                }
+
+                channel.position(currentOffset);
+                long position = currentOffset;
+                long lineStart = currentOffset;
+                long committedOffset = currentOffset;
+                ByteBuffer buffer = ByteBuffer.allocate(8192);
+                ByteArrayOutputStream lineBytes = new ByteArrayOutputStream();
+
+                // Read a snapshot of the file using byte positions, not line counts.
+                while (position < fileSize) {
+                    buffer.clear();
+                    buffer.limit((int) Math.min(buffer.capacity(), fileSize - position));
+                    if (channel.read(buffer) <= 0) {
+                        break;
+                    }
+                    buffer.flip();
+                    while (buffer.hasRemaining()) {
+                        byte value = buffer.get();
+                        position++;
+                        if (value == '\n') {
+                            String line = new String(lineBytes.toByteArray(), StandardCharsets.UTF_8);
+                            if (line.endsWith("\r")) {
+                                line = line.substring(0, line.length() - 1);
+                            }
+                            if (!line.trim().isEmpty()) {
+                                processLogEntry(filePath.toString(), line, lineStart);
+                            }
+                            lineBytes.reset();
+                            committedOffset = position;
+                            lineStart = position;
+                        } else {
+                            lineBytes.write(value);
+                        }
+                    }
+                }
+
+                // Leave an unfinished trailing line for the next append notification.
+                offsetManager.commitOffset(filePath.toString(), committedOffset);
+            } catch (Exception e) {
+                logger.error("Error processing log file: " + filePath, e);
+            }
         }
     }
 
